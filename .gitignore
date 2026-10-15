@@ -1,0 +1,66 @@
+# ===== Secrets (never commit API keys) =====
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# ===== uv / virtual environments =====
+# Keep uv.lock and .python-version committed (reproducible installs)
+.venv/
+venv/
+env/
+
+# ===== Tooling caches =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.ipynb_checkpoints/
+
+# ===== Project runtime outputs =====
+# Task dumps and scratch solutions from moulinette runs
+cache/
+# Evaluation logs (./evaluations/EVAL_TYPE/<timestamp>/...)
+evaluations/
+# Sandbox scratch area if created locally
+tmp/
+*.log
+
+# Benchmark solution.json files MUST stay in the repo (subject V.7):
+# do not ignore benchmarks/results/
+
+# ===== Docker / large artifacts (forbidden in submission) =====
+*.tar
+*.tar.gz
+*.img
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.onnx
+models/weights/
+
+# ===== Editors / OS =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
