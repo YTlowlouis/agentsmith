@@ -3,6 +3,7 @@ name = "agentsmith"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
+    "dotenv>=0.9.9",
     "mcp>=2.3.0",
     "openai>=3.31.0",
     "pydantic>=2.14.1",
