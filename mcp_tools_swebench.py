@@ -2,6 +2,7 @@ import os
 import fnmatch
 import re
 import ast
+import subprocess
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -289,6 +290,33 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
             f"Unicode decode error opening {to_display_path(verified_path)}, file may not be a text file"
         )
     return f"Replacement in file {to_display_path(verified_path)} executed without any error"
+
+
+@mcp.tool()
+def get_patch() -> str:
+    """Return the unified git diff of all changes made to the repository.
+
+    Returns an empty string if nothing was modified. Submit your fix with
+    final_answer(get_patch()).
+    """
+    try:
+        gitc = subprocess.run(
+            ["git", "-c", "core.fileMode=false", "diff"],
+            timeout=5,
+            text=True,
+            capture_output=True,
+            cwd=TESTBED_PATH,
+        )
+
+        if gitc.returncode != 0:
+            raise ToolError(f"Error when showing diff: {gitc.stderr}")
+    except subprocess.TimeoutExpired:
+        raise ToolError(
+            "Subprocess timed out on command: git -c core.fileMode=false diff"
+        )
+    except FileNotFoundError:
+        raise ToolError("git is not installed or not found")
+    return gitc.stdout
 
 
 if __name__ == "__main__":
