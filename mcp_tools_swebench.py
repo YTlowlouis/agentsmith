@@ -1,5 +1,5 @@
 import os
-from os.path import realpath
+import fnmatch
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -36,6 +36,15 @@ def translate_path(path: str) -> str:
             f"Access denied: {requested} is outside the repository ({CONTAINER_ROOT})"
         )
     return real_path
+
+
+def to_display_path(path: str) -> str:
+    if path == TESTBED_PATH:
+        return CONTAINER_ROOT
+    if path.startswith(TESTBED_PATH + "/"):
+        len_testbed = len(TESTBED_PATH)
+        return CONTAINER_ROOT + path[len_testbed:]
+    raise ValueError(f"Path: {path} not in testbed")
 
 
 @mcp.tool()
@@ -99,6 +108,11 @@ def read_file(filepath: str, start_line: int, end_line: int) -> str:
             f"Unicode decode error opening {filepath}, file may not be a text file"
         )
     return "\n".join(text)
+
+
+@mcp.tool()
+def list_files(directory: str, pattern: str) -> list:
+    pass
 
 
 if __name__ == "__main__":
