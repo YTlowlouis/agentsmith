@@ -1,6 +1,7 @@
 import os
 import fnmatch
 import re
+import ast
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -16,6 +17,7 @@ EXCLUDED_DIRS = {".git", "__pycache__", ".tox", ".pytest_cache"}
 MAX_FILES = 200
 MAX_MATCHES = 200
 MAX_LINE_FOR_MATCH = 200
+MAX_LEN_FOR_OLDSTR = 50
 
 mcp = MCPServer("mcp_swebench")
 
@@ -218,6 +220,75 @@ def search_code(pattern: str, file_pattern: str = "*.py") -> str:
             f"[Showing {len(final)} of {old_len}. Use a more specific pattern or file_pattern.]"
         )
     return "\n".join(final)
+
+
+@mcp.tool()
+def edit_file(filepath: str, old_str: str, new_str: str) -> str:
+    """Replace an exact snippet of text in a file of the repository.
+
+    Args:
+        filepath: path to the file, either absolute under /testbed
+            (e.g. /testbed/sympy/core/basic.py) or relative to the
+            repository root (e.g. sympy/core/basic.py).
+        old_str: text to replace. It must match the file exactly, including
+            indentation and whitespace, and appear exactly once. If it
+            appears several times, include surrounding lines to make it unique.
+        new_str: replacement text.
+
+    For .py files, an edit that would break Python syntax is rejected and the
+    file is left unchanged. Returns a confirmation message on success.
+    """
+    if not old_str:
+        raise ToolError("Empty snippet to be replaced")
+
+    verified_path = translate_path(filepath)
+    if not os.path.exists(verified_path):
+        raise ToolError(f"{to_display_path(verified_path)} does not exist")
+    if os.path.isdir(verified_path):
+        raise ToolError(f"{to_display_path(verified_path)} is a directory")
+
+    try:
+        with open(verified_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            count = content.count(old_str)
+            new_old_str = old_str
+            if len(old_str) > MAX_LEN_FOR_OLDSTR:
+                new_old_str = old_str[:MAX_LEN_FOR_OLDSTR]
+                new_old_str += "..."
+        if count <= 0:
+            raise ToolError(
+                f"{new_old_str} not found in {to_display_path(verified_path)}"
+            )
+        if count > 1:
+            raise ToolError(
+                f"Multiple occurrence of {new_old_str} in {to_display_path(verified_path)}, try to make it more precise"
+            )
+        content = content.replace(old_str, new_str)
+        if filepath.endswith(".py"):
+            ast.parse(content)
+
+        with open(verified_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    except SyntaxError as e:
+        raise ToolError(
+            f"Invalid code after modification at line {e.lineno}: {e.msg}. Wrong code: {e.text}"
+        )
+    except PermissionError:
+        raise ToolError(
+            f"PermissionError when opening: {to_display_path(verified_path)}"
+        )
+    except FileNotFoundError:
+        raise ToolError(f"File {to_display_path(verified_path)} not found")
+    except IsADirectoryError:
+        raise ToolError(
+            f"File {to_display_path(verified_path)} is a directory"
+        )
+    except UnicodeDecodeError:
+        raise ToolError(
+            f"Unicode decode error opening {to_display_path(verified_path)}, file may not be a text file"
+        )
+    return f"Replacement in file {to_display_path(verified_path)} executed without any error"
 
 
 if __name__ == "__main__":
