@@ -319,5 +319,70 @@ def get_patch() -> str:
     return gitc.stdout
 
 
+@mcp.tool()
+def search_function_or_class_definition_in_code(name: str) -> str:
+    """Find where a function, method or class is defined in the repository.
+
+    Args:
+        name: the bare name to look for (e.g. "_eval_inverse", "DenseMatrix").
+            A dotted name like "DenseMatrix._eval_inverse" is reduced to its
+            last part.
+
+    Searches all .py files for lines starting with "def <name>",
+    "async def <name>" or "class <name>". Returns one match per line in the
+    format "/testbed/path/to/file.py:<line_number> <line_content>".
+    Names defined by assignment (e.g. "Matrix = MutableDenseMatrix") are not
+    found; use search_code for those. At most 100 results are returned.
+    """
+    if not name:
+        raise ToolError("Empty name")
+    if "." in name:
+        name = name.rsplit(".", 1)[-1]
+
+    escaped_name = re.escape(name)
+    reg = re.compile(rf"^\s*(async\s+)?(def|class)\s+{escaped_name}\b")
+    files = find_files(TESTBED_PATH, "*.py")
+
+    final = []
+    for file in files:
+        try:
+            with open(file, "r", encoding="utf-8") as f:
+                for x, line in enumerate(f, start=1):
+                    if reg.search(line):
+                        newline = line.rstrip("\n")
+                        if len(newline) > MAX_LINE_FOR_MATCH:
+                            newline = (
+                                newline[:MAX_LINE_FOR_MATCH]
+                                + f"... truncated {len(newline) - MAX_LINE_FOR_MATCH} characters"
+                            )
+                            final.append(
+                                f"{to_display_path(file)}:{x} {newline}"
+                            )
+                        else:
+                            final.append(
+                                f"{to_display_path(file)}:{x} {newline}"
+                            )
+
+        except (
+            PermissionError,
+            FileNotFoundError,
+            IsADirectoryError,
+            UnicodeDecodeError,
+        ):
+            continue
+
+    if not final:
+        return f"No definition found for: {name}"
+
+    if len(final) > MAX_MATCHES:
+        old_len = len(final)
+        final = final[:MAX_MATCHES]
+        final.append(
+            f"[Showing {MAX_MATCHES} of {old_len} definitions. "
+            f"Use search_code with the class name to narrow it down.]"
+        )
+    return "\n".join(final)
+
+
 if __name__ == "__main__":
     mcp.run()
