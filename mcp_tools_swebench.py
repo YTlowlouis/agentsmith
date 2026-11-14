@@ -3,7 +3,6 @@ import fnmatch
 import re
 import ast
 import subprocess
-from sys import stderr
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -23,6 +22,8 @@ MAX_LINE_FOR_MATCH = 200
 MAX_LEN_FOR_OLDSTR = 50
 RUN_TESTS_TIMEOUT = 300
 MAX_TESTS_OUTPUT = 4000
+RUN_COMMAND_TIMEOUT = 30
+MAX_COMMAND_OUTPUT = 2000
 
 mcp = MCPServer("mcp_swebench")
 
@@ -495,8 +496,48 @@ def run_tests() -> str:
 
 
 @mcp.tool()
-def run_command(command, workdir) -> str:
-    pass
+def run_command(command: str, workdir: str = "/testbed") -> str:
+    prefix = os.environ.get("PREFIX_DOCKER", "")
+    if not command:
+        raise ToolError("Empty command")
+
+    real_path = translate_path(workdir)
+
+    if not os.path.exists(real_path):
+        raise ToolError(f"Workdir: {workdir} does not exist.")
+    if not os.path.isdir(real_path):
+        raise ToolError(f"{workdir} is not a directory, it is a file.")
+
+    try:
+        output = subprocess.run(
+            ["bash", "-c", prefix + command],
+            cwd=real_path,
+            timeout=RUN_COMMAND_TIMEOUT,
+            text=True,
+            capture_output=True,
+        )
+    except subprocess.TimeoutExpired:
+        raise ToolError(f"Process expired in {RUN_COMMAND_TIMEOUT} seconds.")
+
+    stdout, stderr = "", ""
+    if len(output.stdout) > MAX_COMMAND_OUTPUT:
+        stdout = output.stdout[: int(MAX_COMMAND_OUTPUT * 0.2)]
+        stdout += f"\n[... {len(output.stdout) - MAX_COMMAND_OUTPUT} characters truncated ...]\n"
+        stdout += output.stdout[-int(MAX_COMMAND_OUTPUT * 0.8) :]
+    else:
+        stdout = output.stdout
+
+    if len(output.stderr) > MAX_COMMAND_OUTPUT:
+        stderr = output.stderr[: int(MAX_COMMAND_OUTPUT * 0.2)]
+        stderr += f"\n[... {len(output.stderr) - MAX_COMMAND_OUTPUT} characters truncated ...]\n"
+        stderr += output.stderr[-int(MAX_COMMAND_OUTPUT * 0.8) :]
+    else:
+        stderr = output.stderr
+
+    final = (
+        f"Output code: {output.returncode}\nStdout: {stdout}\nStderr: {stderr}"
+    )
+    return final
 
 
 if __name__ == "__main__":
