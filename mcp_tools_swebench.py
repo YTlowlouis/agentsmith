@@ -3,6 +3,7 @@ import fnmatch
 import re
 import ast
 import subprocess
+from sys import stderr
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -12,6 +13,7 @@ CONTAINER_ROOT = "/testbed"
 _raw_testbed = os.environ.get("TESTBED_PATH")
 if not _raw_testbed:
     raise SystemExit("TESTBED_PATH environment variable is not set")
+
 TESTBED_PATH = os.path.realpath(_raw_testbed)
 MAX_LINES = 200
 EXCLUDED_DIRS = {".git", "__pycache__", ".tox", ".pytest_cache"}
@@ -19,6 +21,8 @@ MAX_FILES = 200
 MAX_MATCHES = 200
 MAX_LINE_FOR_MATCH = 200
 MAX_LEN_FOR_OLDSTR = 50
+RUN_TESTS_TIMEOUT = 300
+MAX_TESTS_OUTPUT = 4000
 
 mcp = MCPServer("mcp_swebench")
 
@@ -184,34 +188,8 @@ def search_code(pattern: str, file_pattern: str = "*.py") -> str:
         raise ToolError(
             f"Invalid pattern: '{pattern}', escape special characters"
         )
-    files = find_files(TESTBED_PATH, file_pattern)
 
-    for file in files:
-        try:
-            with open(file, "r", encoding="utf-8") as f:
-                for x, line in enumerate(f, start=1):
-                    if regex.search(line):
-                        newline = line.rstrip("\n")
-                        if len(newline) > MAX_LINE_FOR_MATCH:
-                            newline = (
-                                newline[:MAX_LINE_FOR_MATCH]
-                                + f"... truncated {len(newline) - MAX_LINE_FOR_MATCH} characters"
-                            )
-                            final.append(
-                                f"{to_display_path(file)}:{x} {newline}"
-                            )
-                        else:
-                            final.append(
-                                f"{to_display_path(file)}:{x} {newline}"
-                            )
-
-        except (
-            PermissionError,
-            FileNotFoundError,
-            IsADirectoryError,
-            UnicodeDecodeError,
-        ):
-            continue
+    final = grep_repo(regex, file_pattern)
     if not final:
         return f"No matches for pattern: '{pattern}' for files: {file_pattern}"
     if len(final) > MAX_MATCHES:
@@ -341,35 +319,8 @@ def search_function_or_class_definition_in_code(name: str) -> str:
 
     escaped_name = re.escape(name)
     reg = re.compile(rf"^\s*(async\s+)?(def|class)\s+{escaped_name}\b")
-    files = find_files(TESTBED_PATH, "*.py")
 
-    final = []
-    for file in files:
-        try:
-            with open(file, "r", encoding="utf-8") as f:
-                for x, line in enumerate(f, start=1):
-                    if reg.search(line):
-                        newline = line.rstrip("\n")
-                        if len(newline) > MAX_LINE_FOR_MATCH:
-                            newline = (
-                                newline[:MAX_LINE_FOR_MATCH]
-                                + f"... truncated {len(newline) - MAX_LINE_FOR_MATCH} characters"
-                            )
-                            final.append(
-                                f"{to_display_path(file)}:{x} {newline}"
-                            )
-                        else:
-                            final.append(
-                                f"{to_display_path(file)}:{x} {newline}"
-                            )
-
-        except (
-            PermissionError,
-            FileNotFoundError,
-            IsADirectoryError,
-            UnicodeDecodeError,
-        ):
-            continue
+    final = grep_repo(reg, "*.py")
 
     if not final:
         return f"No definition found for: {name}"
@@ -382,6 +333,170 @@ def search_function_or_class_definition_in_code(name: str) -> str:
             f"Use search_code with the class name to narrow it down.]"
         )
     return "\n".join(final)
+
+
+def grep_repo(regex: re.Pattern, file_pattern: str) -> list[str]:
+    """Search every line of the repository files matching file_pattern.
+
+    Returns one formatted line per match:
+    "/testbed/path/to/file.py:<line_number> <line_content>".
+    Unreadable files are skipped; long lines are truncated.
+    """
+    matches = []
+    for file in find_files(TESTBED_PATH, file_pattern):
+        try:
+            with open(file, "r", encoding="utf-8") as f:
+                for x, line in enumerate(f, start=1):
+                    if not regex.search(line):
+                        continue
+                    content = line.rstrip("\n")
+                    if len(content) > MAX_LINE_FOR_MATCH:
+                        content = (
+                            content[:MAX_LINE_FOR_MATCH]
+                            + f"... truncated {len(content) - MAX_LINE_FOR_MATCH} characters"
+                        )
+                    matches.append(f"{to_display_path(file)}:{x} {content}")
+        except (
+            PermissionError,
+            FileNotFoundError,
+            IsADirectoryError,
+            UnicodeDecodeError,
+        ):
+            continue
+    return matches
+
+
+@mcp.tool()
+def find_references(name: str, filepath: str, line: int) -> str:
+    """Find all usages of a function, method or class name in the repository.
+
+    Args:
+        name: the bare name of the symbol (e.g. "inv"). A dotted name like
+            "Matrix.inv" is reduced to its last part.
+        filepath: file where the symbol appears, either absolute under
+            /testbed or relative to the repository root.
+        line: 1-based line number in filepath where the symbol appears
+            (e.g. its definition). Used to check the symbol exists there.
+
+    Searches all .py files for the name as a whole word. The search is by
+    name only: other symbols with the same name, comments and strings are
+    included too. Returns one match per line in the format
+    "/testbed/path/to/file.py:<line_number> <line_content>".
+    At most 100 results are returned.
+    """
+    if not name:
+        raise ToolError("Empty name")
+    if line <= 0:
+        raise ToolError("Line number inferior to 1 does not exist")
+
+    name = name.rsplit(".", 1)[-1]
+
+    verified_path = translate_path(filepath)
+
+    reg = re.compile(rf"\b{re.escape(name)}\b")
+
+    if not os.path.exists(verified_path):
+        raise ToolError(f"File: {filepath} does not exist")
+    try:
+        with open(verified_path, "r", encoding="utf-8") as f:
+            text = f.readlines()
+            if len(text) < line:
+                raise ToolError(f"Line: {line} exceeds number of line in file")
+            if not reg.search(text[line - 1]):
+                raise ToolError(f"{name} does not appear at line {line}")
+
+        final = grep_repo(reg, "*.py")
+
+        if not final:
+            raise ToolError(f"No match found for pattern: '{name}'")
+
+        if len(final) > MAX_MATCHES:
+            old_len = len(final)
+            final = final[:MAX_MATCHES]
+            final.append(
+                f"[Showing {MAX_MATCHES} of {old_len} references. "
+                f"Use search_code with a more specific pattern (e.g. '\\.{name}\\(' for calls) to narrow it down.]",
+            )
+        return "\n".join(final)
+
+    except PermissionError:
+        raise ToolError(
+            f"PermissionError when opening: {to_display_path(verified_path)}"
+        )
+    except FileNotFoundError:
+        raise ToolError(f"File {to_display_path(verified_path)} not found")
+    except IsADirectoryError:
+        raise ToolError(
+            f"File {to_display_path(verified_path)} is a directory"
+        )
+    except UnicodeDecodeError:
+        raise ToolError(
+            f"Unicode decode error opening {to_display_path(verified_path)}, file may not be a text file"
+        )
+
+
+@mcp.tool()
+def run_tests() -> str:
+    """Run the official test script of the task and return its test output.
+
+    Applies the task's test files, runs the relevant tests, then restores the
+    test files: edits you make to those test files are overwritten. Only the
+    test runner output is returned, truncated to its last part if long. Read
+    the summary at the end (e.g. "tests finished: 24 passed, 1 failed").
+    Takes up to a few minutes.
+    """
+    eval_path = os.environ.get("EVAL_SCRIPT_PATH", "/eval.sh")
+    if not os.path.exists(eval_path):
+        raise ToolError(f"File: {eval_path} does not exist")
+
+    try:
+        result = subprocess.run(
+            ["bash", eval_path],
+            cwd=TESTBED_PATH,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=RUN_TESTS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise ToolError(
+            f"Tests did not finish within {RUN_TESTS_TIMEOUT} seconds. "
+            "The fix may cause an infinite loop or the test suite is too slow."
+        )
+
+    text = result.stdout.split("\n")
+
+    start_index = -1
+    end_index = -1
+
+    for x, line in enumerate(text):
+        if ">>>>> Start Test Output" in line and start_index < 0:
+            start_index = x
+        if ">>>>> End Test Output" in line and end_index < 0:
+            end_index = x
+
+    if start_index < 0 or end_index < 0:
+        text.append(
+            "Missing start or end marker, an error probably"
+            " occurred that prevented tests from completing"
+        )
+        text = "\n".join(text)
+
+    else:
+        text = "\n".join(text[start_index + 1 : end_index])
+
+    if len(text) > MAX_TESTS_OUTPUT:
+        beggining = text[: int(MAX_TESTS_OUTPUT * 0.2)]
+        beggining += f"\n[... {len(text) - MAX_TESTS_OUTPUT} characters truncated ...]\n"
+        end = text[-int(MAX_TESTS_OUTPUT * 0.8) :]
+        text = beggining + end
+
+    return text
+
+
+@mcp.tool()
+def run_command(command, workdir) -> str:
+    pass
 
 
 if __name__ == "__main__":
