@@ -4,8 +4,14 @@ from smith.sandbox.worker import worker_main
 
 import multiprocessing as mp
 import json
-import time
 from typing import NoReturn
+from pydantic import BaseModel
+
+
+class ExecutionResult(BaseModel):
+    stdout: str
+    stderr: str
+    error: str
 
 
 class ExecutorError(Exception):
@@ -16,7 +22,7 @@ class SandboxExecutor:
     def __init__(self, config: SandboxConfig) -> None:
         self.config = config
         self.ctx = mp.get_context("spawn")
-        self.process = None
+        self.process: mp.Process | None = None
         self.conn = None
 
     def __enter__(self):
@@ -80,5 +86,36 @@ class SandboxExecutor:
 
         self.process, self.conn = None, None
 
-    def execute_code(self, code) -> str:
-        return ""
+    def execute_code(self, code: str) -> ExecutionResult:
+        if self.process and not self.process.is_alive():
+            self.close()
+            self.start()
+        if not self.process or not self.conn:
+            self.start()
+
+        message = {}
+        message["type"] = "exec"
+        message["code"] = code
+        msg_str = json.dumps(message)
+        if not self.conn:
+            raise ExecutorError("Conection is not established")
+        self.conn.send_bytes(msg_str.encode())
+
+        response = self.conn.recv_bytes()
+
+        try:
+            response_dict = json.loads(response)
+            if not (
+                isinstance(response_dict, dict)
+                and response_dict.get("type") == "result"
+            ):
+                raise ExecutorError("Invalid response from child")
+        except json.JSONDecodeError:
+            raise ExecutorError("Error when decoding json from child response")
+
+        result = ExecutionResult(
+            stdout=response_dict.get("stdout", ""),
+            stderr=response_dict.get("stderr", ""),
+            error=response_dict.get("error", ""),
+        )
+        return result
