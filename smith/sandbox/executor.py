@@ -107,7 +107,7 @@ class SandboxExecutor:
             response_dict = json.loads(response)
             if not (
                 isinstance(response_dict, dict)
-                and response_dict.get("type") == "result"
+                and response_dict.get("type") in ("result", "error")
             ):
                 raise ExecutorError("Invalid response from child")
         except json.JSONDecodeError:
