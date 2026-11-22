@@ -1,4 +1,5 @@
 from multiprocessing.context import SpawnProcess
+from multiprocessing.connection import Connection
 from smith.models.sandbox_config import SandboxConfig
 from smith.sandbox.worker import worker_main
 
@@ -9,9 +10,11 @@ from pydantic import BaseModel
 
 
 class ExecutionResult(BaseModel):
-    stdout: str
-    stderr: str
-    error: str
+    stdout: str = ""
+    stderr: str = ""
+    error: str = ""
+    timed_out: bool = False
+    restarted: bool = False
 
 
 class ExecutorError(Exception):
@@ -22,8 +25,8 @@ class SandboxExecutor:
     def __init__(self, config: SandboxConfig) -> None:
         self.config = config
         self.ctx = mp.get_context("spawn")
-        self.process: mp.Process | None = None
-        self.conn = None
+        self.process: SpawnProcess | None = None
+        self.conn: Connection | None = None
 
     def __enter__(self):
         self.start()
@@ -73,12 +76,15 @@ class SandboxExecutor:
         process.join()
         raise ExecutorError(reason)
 
-    def close(self):
+    def close(self, instant: bool = False):
         if not self.process or not self.conn:
             return
 
         self.conn.close()
-        self.process.join(timeout=2)
+        if instant:
+            self.process.join(timeout=0)
+        else:
+            self.process.join(timeout=2)
 
         if self.process.is_alive():
             self.process.kill()
@@ -99,17 +105,42 @@ class SandboxExecutor:
         msg_str = json.dumps(message)
         if not self.conn:
             raise ExecutorError("Conection is not established")
-        self.conn.send_bytes(msg_str.encode())
+        try:
+            self.conn.send_bytes(msg_str.encode())
+        except OSError:
+            return ExecutionResult(
+                error=self._handle_child_death(), restarted=True
+            )
 
-        response = self.conn.recv_bytes()
+        if not self.conn.poll(self.config.max_execution_time_seconds):
+            self.close(True)
+            self.start()
+            return ExecutionResult(
+                error=f"Execution timed out after: {self.config.max_execution_time_seconds}s, possible infinite loop. Sandbox restarted: all variables and functions defined earlier were lost.",
+                timed_out=True,
+                restarted=True,
+            )
+
+        try:
+            response = self.conn.recv_bytes()
+        except (OSError, EOFError):
+            return ExecutionResult(
+                error=self._handle_child_death(),
+                restarted=True,
+            )
 
         try:
             response_dict = json.loads(response)
-            if not (
-                isinstance(response_dict, dict)
-                and response_dict.get("type") in ("result", "error")
-            ):
-                raise ExecutorError("Invalid response from child")
+            if isinstance(response_dict, dict):
+                if response_dict.get("type", "") == "error":
+                    raise ExecutorError(response_dict.get("message", ""))
+                if not response_dict.get("type") == "result":
+                    raise ExecutorError("Invalid response from child")
+            else:
+                raise ExecutorError(
+                    "Invalid response, from child: not a dictionnary"
+                )
+
         except json.JSONDecodeError:
             raise ExecutorError("Error when decoding json from child response")
 
@@ -119,3 +150,12 @@ class SandboxExecutor:
             error=response_dict.get("error", ""),
         )
         return result
+
+    def _handle_child_death(self) -> str:
+        if not self.process:
+            raise ExecutorError("Process is not initialised")
+        self.process.join(1)
+        code = self.process.exitcode
+        self.close(True)
+        self.start()
+        return f"The sandbox process crashed (exit code {code}) while running your code. It was restarted: all variables and functions defined earlier were lost."

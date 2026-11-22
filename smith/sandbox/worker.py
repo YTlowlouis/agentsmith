@@ -3,6 +3,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import json
 import io
 import traceback
+import resource
 
 
 class WorkerError(Exception):
@@ -57,6 +58,10 @@ class Worker:
         }
 
     def run(self) -> None:
+        memory_limit = self.config["max_memory_mb"]
+        memory_limit *= 1000000
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
+
         self.send_dict({"type": "ready"})
 
         while True:
