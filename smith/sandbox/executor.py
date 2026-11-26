@@ -1,5 +1,6 @@
 from multiprocessing.context import SpawnProcess
 from multiprocessing.connection import Connection
+from keyword import iskeyword
 from smith.models.sandbox_config import SandboxConfig
 from smith.sandbox.mcp_bridge import MCPBridge
 from smith.sandbox.worker import worker_main
@@ -16,6 +17,7 @@ class ExecutionResult(BaseModel):
     error: str = ""
     timed_out: bool = False
     restarted: bool = False
+    final_answer: str | None = None
 
 
 class ExecutorError(Exception):
@@ -26,6 +28,23 @@ class SandboxExecutor:
     def __init__(
         self, config: SandboxConfig, bridge: MCPBridge | None = None
     ) -> None:
+        self.bridge = bridge
+        if self.bridge is not None and self.bridge.session is None:
+            raise ExecutorError("Bridge session is not initialised")
+
+        self.tools: list = []
+        if self.bridge is not None:
+            no_tool_check = ["final_answer", "print", "open", "len"]
+            self.tools = [
+                tool
+                for tool in list(set(self.bridge.list_tools()))
+                if isinstance(tool.get("name", ""), str)
+                and tool.get("name", "").isidentifier()
+                and not iskeyword(tool.get("name", ""))
+                and not tool.get("name", "").startswith("__")
+                and tool.get("name", "") not in no_tool_check
+            ]
+
         self.config = config
         self.ctx = mp.get_context("spawn")
         self.process: SpawnProcess | None = None
@@ -44,7 +63,7 @@ class SandboxExecutor:
 
         process = self.ctx.Process(
             target=worker_main,
-            args=(conn2, self.config.model_dump()),
+            args=(conn2, self.config.model_dump(), self.tools),
             daemon=True,
         )
 
@@ -151,6 +170,7 @@ class SandboxExecutor:
             stdout=response_dict.get("stdout", ""),
             stderr=response_dict.get("stderr", ""),
             error=response_dict.get("error", ""),
+            final_answer=response_dict.get("final_answer", ""),
         )
         return result
 

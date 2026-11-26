@@ -97,6 +97,6 @@ class Worker:
             self.send_dict(self.execute_code(message.get("code")))
 
 
-def worker_main(conn: Connection, config: dict) -> None:
+def worker_main(conn: Connection, config: dict, tools: list) -> None:
     worker = Worker(conn, config)
     worker.run()
