@@ -1,6 +1,7 @@
 from multiprocessing.context import SpawnProcess
 from multiprocessing.connection import Connection
 from smith.models.sandbox_config import SandboxConfig
+from smith.sandbox.mcp_bridge import MCPBridge
 from smith.sandbox.worker import worker_main
 
 import multiprocessing as mp
@@ -22,7 +23,9 @@ class ExecutorError(Exception):
 
 
 class SandboxExecutor:
-    def __init__(self, config: SandboxConfig) -> None:
+    def __init__(
+        self, config: SandboxConfig, bridge: MCPBridge | None = None
+    ) -> None:
         self.config = config
         self.ctx = mp.get_context("spawn")
         self.process: SpawnProcess | None = None
