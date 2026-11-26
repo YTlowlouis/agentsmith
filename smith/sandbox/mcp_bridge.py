@@ -117,11 +117,68 @@ class MCPBridge:
     def list_tools(self):
         return self.tools
 
-    def read_resource(self, uri):
-        pass
+    def read_resource(self, uri: str):
+        if (
+            not self.thread
+            or not self.thread.is_alive()
+            or not self.event_loop
+            or not self.session
+        ):
+            raise MCPBridgeError("MCP bridge is not connected")
+        if not isinstance(uri, str) or not uri:
+            raise MCPBridgeError("Uri is empty")
 
-    def get_prompt(self, name, args):
-        pass
+        future = asyncio.run_coroutine_threadsafe(
+            self.session.read_resource(uri), self.event_loop
+        )
+        try:
+            result = future.result(self.READY_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise MCPBridgeError(f"Read resource {uri} timed out")
+        except Exception as e:
+            raise MCPBridgeError(
+                f"Read resource {uri} failed: {type(e).__name__}: {e}"
+            ) from e
+
+        text = "\n".join(
+            c.text for c in result.contents if hasattr(c, "text")
+        )
+        return {"uri": uri, "text": text}
+
+    def get_prompt(self, name: str, args: dict | None = None):
+        if (
+            not self.thread
+            or not self.thread.is_alive()
+            or not self.event_loop
+            or not self.session
+        ):
+            raise MCPBridgeError("MCP bridge is not connected")
+        if not isinstance(name, str) or not name:
+            raise MCPBridgeError("Name is empty")
+        args = {k: str(v) for k, v in (args or {}).items()}
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.session.get_prompt(name, args), self.event_loop
+        )
+        try:
+            result = future.result(self.READY_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise MCPBridgeError(f"Get prompt {name} timed out")
+        except Exception as e:
+            raise MCPBridgeError(
+                f"Get prompt {name} failed: {type(e).__name__}: {e}"
+            ) from e
+
+        return {
+            "description": result.description,
+            "messages": [
+                {"role": m.role, "text": m.content.text}
+                for m in result.messages
+                if m.content.type == "text"
+            ],
+        }
 
     def close(self):
         if not self.thread or not self.event_loop:
