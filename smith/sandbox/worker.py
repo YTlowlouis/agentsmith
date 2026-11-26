@@ -10,12 +10,21 @@ class WorkerError(Exception):
     pass
 
 
+class FinalAnswerSignal(BaseException):
+    pass
+
+
 class Worker:
     def __init__(self, conn: Connection, config: dict) -> None:
         self.conn: Connection | None = conn
         self.config = config
-        self.variable_dic = {}
+        self.final_value: str | None = None
+        self.variable_dic = {"final_answer": self.final_answer}
         self.variable_dic["__name__"] = "__sandbox__"
+
+    def final_answer(self, answer: object):
+        self.final_value = str(answer)
+        raise FinalAnswerSignal("Final answer set.")
 
     def send_dict(self, message: dict):
         dict_str = json.dumps(message)
@@ -42,11 +51,14 @@ class Worker:
         stdout = io.StringIO()
         stderr = io.StringIO()
         error = ""
+        self.final_value = None
 
         with redirect_stderr(stderr), redirect_stdout(stdout):
             try:
                 result = compile(code, filename="<sandbox>", mode="exec")
                 exec(result, self.variable_dic)
+            except FinalAnswerSignal:
+                pass
             except Exception:
                 error = traceback.format_exc()
 
@@ -55,6 +67,7 @@ class Worker:
             "stdout": stdout.getvalue(),
             "stderr": stderr.getvalue(),
             "error": error,
+            "final_answer": self.final_value,
         }
 
     def run(self) -> None:
