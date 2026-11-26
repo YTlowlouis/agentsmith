@@ -46,7 +46,8 @@ def translate_path(path: str) -> str:
     real_path = os.path.realpath(path)
     if os.path.commonpath([real_path, TESTBED_PATH]) != TESTBED_PATH:
         raise ToolError(
-            f"Access denied: {requested} is outside the repository ({CONTAINER_ROOT})"
+            f"Access denied: {requested} is outside the repository"
+            f"({CONTAINER_ROOT})"
         )
     return real_path
 
