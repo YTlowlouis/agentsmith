@@ -4,6 +4,7 @@ import shlex
 import os
 from mcp import ClientSession, StdioServerParameters, MCPError
 from mcp.client.stdio import stdio_client
+import concurrent.futures
 
 
 class MCPBridgeError(Exception):
@@ -12,6 +13,7 @@ class MCPBridgeError(Exception):
 
 class MCPBridge:
     READY_TIMEOUT = 5
+    TOOL_TIMEOUT = 600
 
     def __init__(self, url: str = "", command: str = "") -> None:
         if url and command:
@@ -31,7 +33,7 @@ class MCPBridge:
         self.prompts: list = []
         self.resources: list = []
 
-        self.ready: threading.Event | None = threading.Event()
+        self.ready: threading.Event = threading.Event()
         self.stop: asyncio.Event | None = None
         self.starting_error: Exception | None = None
 
@@ -78,16 +80,39 @@ class MCPBridge:
         self.event_loop.run_until_complete(self._main())
 
     def call_tool(self, name: str, args: dict | None = None):
-        if not self.thread or not self.event_loop or not self.session:
+        if (
+            not self.thread
+            or not self.thread.is_alive()
+            or not self.event_loop
+            or not self.session
+        ):
             raise MCPBridgeError("MCP bridge is not connected")
         if not isinstance(name, str) or not name:
             raise MCPBridgeError("Name is empty")
         if not args:
             args = {}
 
-        result = asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             self.session.call_tool(name, args), self.event_loop
         )
+
+        try:
+            results = future.result(self.TOOL_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise MCPBridgeError(
+                f"Tool call {name} timed out after {self.TOOL_TIMEOUT} seconds"
+            )
+        except Exception as e:
+            raise MCPBridgeError(
+                f"Tool call {name} failed: {type(e).__name__}: {e}"
+            ) from e
+
+        text = "\n".join(
+            [text.text for text in results.content if text.type == "text"]
+        )
+
+        return {"text": text, "is_error": bool(results.is_error)}
 
     def list_tools(self):
         return self.tools
@@ -116,30 +141,6 @@ class MCPBridge:
         self.thread = None
         self.event_loop = None
         self.starting_error = None
-        self.ready.clear()
-        self.stop = None
-
-    def close(self):
-        if not self.thread or not self.event_loop:
-            return
-
-        try:
-            if not self.stop:
-                raise MCPBridgeError("Stop signal not created")
-            self.event_loop.call_soon_threadsafe(self.stop.set)
-        except RuntimeError:
-            pass
-
-        self.thread.join(2)
-        if self.thread:
-            return
-        self.event_loop.close()
-
-        self.thread = None
-        self.event_loop = None
-        self.starting_error = None
-        if not self.ready:
-            raise MCPBridgeError("Ready flag is none")
         self.ready.clear()
         self.stop = None
 
